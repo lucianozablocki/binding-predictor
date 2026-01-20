@@ -6,7 +6,8 @@ import os
 import pandas as pd
 
 from model import SecondaryStructurePredictor
-from dataset import create_dataloader
+# from dataset import create_dataloader
+from binding_dataset import get_binding_dataloader
 from utils import get_embed_dim
 
 import warnings
@@ -17,12 +18,12 @@ warnings.filterwarnings("ignore", category=UserWarning)
 parser = argparse.ArgumentParser()
 
 parser.add_argument("--emb", type=str, help="The name of the desired LLM-dataset combination.")
-parser.add_argument("--train_partition_path", type=str, help="The path of the train partition.")
-parser.add_argument("--val_partition_path", type=str, help="The path of the validation partition.")
+# parser.add_argument("--train_partition_path", type=str, help="The path of the train partition.")
+# parser.add_argument("--val_partition_path", type=str, help="The path of the validation partition.")
 parser.add_argument("--batch_size", default=4, type=int, help="Batch size to use in forward pass.")
 parser.add_argument("--max_epochs", default=15, type=int, help="Maximum number of training epochs.")
 parser.add_argument("--lr", default=1e-4, type=float, help="Learning rate for the training.")
-parser.add_argument("--out_path", type=str, help="Path to write predictions (base pairs of test partition), weights and logs")
+parser.add_argument("--out_path", default='results', type=str, help="Path to write predictions (base pairs of test partition), weights and logs")
 
 args = parser.parse_args()
 
@@ -33,7 +34,7 @@ else:
 
 os.makedirs(args.out_path, exist_ok=True)
 
-embeddings_path = f"data/embeddings/{args.emb}.h5"
+# embeddings_path = f"data/embeddings/{args.emb}.h5"
 
 logging.basicConfig(
     level=logging.DEBUG,  # Set the minimum log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
@@ -45,29 +46,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-train_loader = create_dataloader(
-    embeddings_path,
-    args.train_partition_path,
-    args.batch_size,
-    True
+train_loader = get_binding_dataloader(
+    tsv_file='iupred2a/data/disprot_v_25_06.tsv',
+    seq_dir='iupred2a/data/seq'
 )
 
-if args.val_partition_path:
-    val_loader = create_dataloader(
-        embeddings_path,
-        args.val_partition_path,
-        args.batch_size,
-        False
-    )
+# if args.val_partition_path:
+#     val_loader = create_dataloader(
+#         embeddings_path,
+#         args.val_partition_path,
+#         args.batch_size,
+#         False
+#     )
 
 embed_dim = get_embed_dim(train_loader)
 net = SecondaryStructurePredictor(embed_dim=embed_dim, device=device, lr=args.lr)
 
 metrics_for_epoch = []
-logger.info(f"Run on {args.out_path}, with device {device} and embeddings {embeddings_path}")
-logger.info(f"Training with file: {args.train_partition_path}")
-if args.val_partition_path:
-    logger.info(f"Validation enabled, using file: {args.val_partition_path}")
+logger.info(f"Run on {args.out_path}, with device {device}")
+logger.info(f"Training with file: {train_loader}, batch size: {args.batch_size}")
+# if args.val_partition_path:
+#     logger.info(f"Validation enabled, using file: {args.val_partition_path}")
 
 for epoch in range(args.max_epochs):
     logger.info(f"Starting epoch {epoch+1}")
@@ -75,12 +74,12 @@ for epoch in range(args.max_epochs):
     
     metrics = {f"train_{k}": v for k, v in metrics.items()}
 
-    if args.val_partition_path:
-        logger.info("Running validation inference")
-        val_metrics = net.test(val_loader)
+    # if args.val_partition_path:
+    #     logger.info("Running validation inference")
+    #     val_metrics = net.test(val_loader)
        
-        val_metrics = {f"val_{k}": v for k, v in val_metrics.items()}
-        metrics.update(val_metrics)
+    #     val_metrics = {f"val_{k}": v for k, v in val_metrics.items()}
+    #     metrics.update(val_metrics)
 
     metrics_for_epoch.append(metrics)
     logger.info(" ".join([f"{k}: {v:.3f}" for k, v in metrics.items()]))    

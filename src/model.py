@@ -4,7 +4,7 @@ from torch.nn.functional import cross_entropy
 from torch.optim.lr_scheduler import LinearLR
 import pandas as pd
 from metrics import contact_f1
-from utils import mat2bp, outer_concat
+from utils import mat2bp, outer_concat, expand_energy_matrix
 from tqdm import tqdm
 
 class ResNet2DBlock(nn.Module):
@@ -82,13 +82,17 @@ class SecondaryStructurePredictor(nn.Module):
         return loss
 
     def forward(self, x):
+        expanded_energy_matrix = expand_energy_matrix(x)
         x = self.linear_in(x) 
 
-        x = outer_concat(x, x) 
+        x = outer_concat(x, x)
+        x = x.concatenate((x, expanded_energy_matrix), dim=-1)
         x = x.permute(0, 3, 1, 2) 
 
         x = self.resnet(x)
+        print("Shape after ResNet:", x.shape)
         x = self.conv_out(x)
+        print("Shape after final conv:", x.shape)
         x = x.squeeze(-3) 
 
         x = torch.triu(x, diagonal=1)
@@ -101,8 +105,8 @@ class SecondaryStructurePredictor(nn.Module):
         loss_acum = 0
         f1_acum = 0
         for batch in tqdm(loader):
-            X = batch["seq_embs_pad"].to(self.device)
-            y = batch["contacts"].to(self.device)
+            X = batch[0].to(self.device)
+            y = batch[1].to(self.device)
             y_pred = self(X)
             # print(f"y_pred size: {y_pred.shape}") # torch.Size([4, 512, 512])
             # print(f"y size: {y.shape}") # torch.Size([4, 512, 512])
