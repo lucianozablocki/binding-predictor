@@ -87,6 +87,9 @@ class BindingDataset(Dataset):
                 
                 # Extract sequence (values) not header (keys)
                 sequence_str = list(fasta_dict.values())[0]
+                if len(sequence_str)>1000:
+                    logger.info(f'Skipping {accession} due to length {len(sequence_str)}')
+                    continue
                 seq_len = len(sequence_str)
                 
                 # One-hot encode sequence (seq_len, NUM_AMINO_ACIDS)
@@ -114,7 +117,7 @@ class BindingDataset(Dataset):
                     else:
                         logger.error(f'For some magical reason the start position is overindexed at {accession} pos {s}')
                 
-                self.data.append((encoded_seq, target_mask))
+                self.data.append((encoded_seq, target_mask, accession))
                 
             except FileNotFoundError as e:
                 # print(f"Missing FASTA for {accession}")
@@ -139,7 +142,7 @@ def pad_collate(batch):
         padded_targets: (Batch, Max_Len)
         lengths: (Batch) - useful for packing sequences or masking loss later
     """
-    (seqs, targets) = zip(*batch)
+    (seqs, targets, accessions) = zip(*batch)
     
     # Calculate lengths (optional, but often useful for masking loss)
     lengths = torch.tensor([len(s) for s in seqs])
@@ -148,9 +151,9 @@ def pad_collate(batch):
     padded_seqs = pad_sequence(seqs, batch_first=True, padding_value=0.0)
     
     # Pad targets with 0 (background class) BE AWARE THIS MIGHT BE WRONG!
-    padded_targets = pad_sequence(targets, batch_first=True, padding_value=0)
+    padded_targets = pad_sequence(targets, batch_first=True, padding_value=-1)
     
-    return padded_seqs, padded_targets, lengths
+    return padded_seqs, padded_targets, lengths, accessions
 
 
 def get_binding_dataloader(tsv_file, seq_dir, batch_size=32, shuffle=True):
