@@ -17,7 +17,6 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--emb", type=str, help="The name of the desired LLM-dataset combination.")
 # parser.add_argument("--train_partition_path", type=str, help="The path of the train partition.")
 # parser.add_argument("--val_partition_path", type=str, help="The path of the validation partition.")
 parser.add_argument("--batch_size", default=4, type=int, help="Batch size to use in forward pass.")
@@ -47,8 +46,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 train_loader = get_binding_dataloader(
-    tsv_file='iupred2a/data/disprot_v_25_06.tsv',
-    seq_dir='iupred2a/data/seq'
+    tsv_file='iupred2a/data/train.tsv',
+    seq_dir='iupred2a/data/seq',
+    batch_size=args.batch_size
+)
+
+val_loader = get_binding_dataloader(
+    tsv_file='iupred2a/data/val.tsv',
+    seq_dir='iupred2a/data/seq',
+    batch_size=args.batch_size,
 )
 
 # if args.val_partition_path:
@@ -75,11 +81,11 @@ for epoch in range(args.max_epochs):
     metrics = {f"train_{k}": v for k, v in metrics.items()}
 
     # if args.val_partition_path:
-    #     logger.info("Running validation inference")
-    #     val_metrics = net.test(val_loader)
+    logger.info("Running validation inference")
+    val_metrics = net.test(val_loader)
        
-    #     val_metrics = {f"val_{k}": v for k, v in val_metrics.items()}
-    #     metrics.update(val_metrics)
+    val_metrics = {f"val_{k}": v for k, v in val_metrics.items()}
+    metrics.update(val_metrics)
 
     metrics_for_epoch.append(metrics)
     logger.info(" ".join([f"{k}: {v:.3f}" for k, v in metrics.items()]))    
