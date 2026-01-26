@@ -2,6 +2,35 @@ import torch
 from sklearn.metrics import f1_score
 from utils import mat2bp
 
+
+def binary_f1(ref_batch, pred_batch, th=0.5, reduce=True):
+    """Compute F1 for 1D binary predictions. Input logits go through sigmoid then threshold."""
+    f1_list = []
+
+    # Handle single sample case
+    if len(ref_batch.shape) < 2:
+        ref_batch = ref_batch.unsqueeze(0)
+        pred_batch = pred_batch.unsqueeze(0)
+
+    for ref, pred in zip(ref_batch, pred_batch):
+        # Ignore padding (marked as -1)
+        mask = ref != -1
+        ref = ref[mask]
+        pred = pred[mask]
+
+        # Apply sigmoid and threshold
+        pred = torch.sigmoid(pred)
+        pred_binary = (pred > th).float()
+
+        f1 = f1_score(ref.numpy(), pred_binary.numpy(), zero_division=0)
+        f1_list.append(f1)
+
+    if reduce:
+        return torch.tensor(f1_list).mean().item()
+    else:
+        return torch.tensor(f1_list)
+
+
 def contact_f1(ref_batch, pred_batch, Ls, th=0.5, reduce=True, method="triangular"):
     """Compute F1 from base pairs. Input goes to sigmoid and then thresholded"""
     f1_list = []
