@@ -9,6 +9,30 @@ from utils import mat2bp, outer_concat
 from tqdm import tqdm
 
 ENERGY_MATRICES_DIR = "data/expanded_energy_matrices"
+DEFAULT_ENERGY_MATRIX_PATH = "iupred2a/data/iupred2_long_energy_matrix"
+
+# Amino acid vocabulary (same order as binding_dataset.py)
+AMINO_ACIDS = "ACDEFGHIKLMNPQRSTVWY"
+AA_TO_INDEX = {aa: i for i, aa in enumerate(AMINO_ACIDS)}
+
+def read_energy_matrix(filepath: str) -> np.ndarray:
+    """Read the 20x20 amino acid energy matrix from file."""
+    n = len(AMINO_ACIDS)
+    matrix = np.zeros((n, n), dtype=np.float32)
+    with open(filepath, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) != 3:
+                continue
+            aa1, aa2, value = parts[0], parts[1], float(parts[2])
+            if aa1 in AA_TO_INDEX and aa2 in AA_TO_INDEX:
+                i = AA_TO_INDEX[aa1]
+                j = AA_TO_INDEX[aa2]
+                matrix[i, j] = value
+    return matrix
 
 class ResNet2DBlock(nn.Module):
     def __init__(self, embed_dim, kernel_size=3, bias=False):
@@ -57,12 +81,17 @@ class BindingPredictor(nn.Module):
         conv_dim=64, kernel_size=3,
         negative_weight=0.1,
         dropout=0.25,
+        energy_matrix_path=DEFAULT_ENERGY_MATRIX_PATH,
         device='cpu', lr=1e-5
     ):
         super().__init__()
         self.lr = lr
         self.threshold = 0.1
         self.linear_in = nn.Linear(embed_dim, (int) (conv_dim/2))
+        # Learnable energy expansion: fixed 20x20 matrix scaled by learnable weights
+        energy_np = read_energy_matrix(energy_matrix_path)
+        self.register_buffer('energy_matrix', torch.tensor(energy_np))  # (20, 20) fixed
+        self.energy_weights = nn.Parameter(torch.ones(20, 20))          # (20, 20) learnable
         self.energy_proj = nn.Conv2d(in_channels=1, out_channels=conv_dim, kernel_size=1, bias=False)
         # Old version: resnet and conv_out with conv_dim+1 channels (energy matrix concatenated)
         # self.resnet = ResNet2D(conv_dim+1, num_blocks, kernel_size)
@@ -98,18 +127,15 @@ class BindingPredictor(nn.Module):
 
     # configurar si usar energy matrix o no, como ablacion
     def forward(self, x, accessions):
-        # Load pre-computed energy matrices from files
         B, L, _ = x.shape
-        energy_matrices = []
-        for acc in accessions:
-            mat = np.load(f"{ENERGY_MATRICES_DIR}/{acc}.npy")
-            energy_matrices.append(torch.tensor(mat, dtype=x.dtype, device=x.device))
-        
-        # Pad energy matrices to match the max sequence length in batch
-        expanded_energy_matrix = torch.zeros((B, L, L), dtype=x.dtype, device=x.device)
-        for i, mat in enumerate(energy_matrices):
-            seq_len = mat.shape[0]
-            expanded_energy_matrix[i, :seq_len, :seq_len] = mat
+
+        # Learnable energy expansion: W_ij * E_ij for each AA pair
+        # Recover AA indices from one-hot input
+        aa_indices = x.argmax(dim=-1)  # (B, L)
+        scaled_energy = self.energy_weights * self.energy_matrix  # (20, 20)
+        # Expand to (B, L, L) using AA indices
+        expanded_energy_matrix = scaled_energy[aa_indices.unsqueeze(2), aa_indices.unsqueeze(1)]  # (B, L, L)
+
         x = self.linear_in(x) 
         x = outer_concat(x, x)
         
