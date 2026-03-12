@@ -5,7 +5,7 @@ import logging
 import os
 import pandas as pd
 
-from model import SecondaryStructurePredictor
+from model import BindingPredictor
 # from dataset import create_dataloader
 from binding_dataset import get_binding_dataloader
 from utils import get_embed_dim
@@ -30,7 +30,7 @@ if torch.cuda.is_available():
     device=f"cuda:{torch.cuda.current_device()}"
 else:
     device='cpu'
-
+# device='cuda:1'
 os.makedirs(args.out_path, exist_ok=True)
 
 # embeddings_path = f"data/embeddings/{args.emb}.h5"
@@ -66,7 +66,7 @@ val_loader = get_binding_dataloader(
 #     )
 
 embed_dim = get_embed_dim(train_loader)
-net = SecondaryStructurePredictor(embed_dim=embed_dim, device=device, lr=args.lr)
+net = BindingPredictor(embed_dim=embed_dim, device=device, lr=args.lr)
 
 metrics_for_epoch = []
 logger.info(f"Run on {args.out_path}, with device {device}")

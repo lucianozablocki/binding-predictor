@@ -51,7 +51,7 @@ class ResNet2D(nn.Module):
 
         return x
 
-class SecondaryStructurePredictor(nn.Module):
+class BindingPredictor(nn.Module):
     def __init__(
         self, embed_dim, num_blocks=2,
         conv_dim=64, kernel_size=3,
@@ -62,12 +62,25 @@ class SecondaryStructurePredictor(nn.Module):
         self.lr = lr
         self.threshold = 0.1
         self.linear_in = nn.Linear(embed_dim, (int) (conv_dim/2))
-        self.resnet = ResNet2D(conv_dim+1, num_blocks, kernel_size)
-        self.conv_out = nn.Conv1d(conv_dim+1, 1, kernel_size=kernel_size, padding="same")
+        self.energy_proj = nn.Conv2d(in_channels=1, out_channels=conv_dim, kernel_size=1, bias=False)
+        # Old version: resnet and conv_out with conv_dim+1 channels (energy matrix concatenated)
+        # self.resnet = ResNet2D(conv_dim+1, num_blocks, kernel_size)
+        # self.conv_out = nn.Conv1d(conv_dim+1, 1, kernel_size=kernel_size, padding="same")
+        self.resnet = ResNet2D(conv_dim, num_blocks, kernel_size)
+        # Old version: single conv1d output
+        # self.conv_out = nn.Conv1d(conv_dim, 1, kernel_size=kernel_size, padding="same")
+        # 2 conv1D out aca
+        self.conv_out = nn.Sequential(
+            nn.Conv1d(conv_dim, conv_dim // 2, kernel_size=kernel_size, padding="same"),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(conv_dim // 2, conv_dim // 4, kernel_size=kernel_size, padding="same"),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(conv_dim // 4, 1, kernel_size=kernel_size, padding="same"),
+        )
         self.device = device
         self.class_weight = torch.tensor([negative_weight, 1.0]).float().to(self.device)
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        self.lr_scheduler = LinearLR(self.optimizer, start_factor=1.0, end_factor=0.1, total_iters=2000)
+        # self.lr_scheduler = LinearLR(self.optimizer, start_factor=1.0, end_factor=0.1, total_iters=2000)
 
         self.to(device)
 
@@ -79,6 +92,7 @@ class SecondaryStructurePredictor(nn.Module):
         loss = binary_cross_entropy_with_logits(yhat[mask], y[mask])
         return loss
 
+    # configurar si usar energy matrix o no, como ablacion
     def forward(self, x, accessions):
         # Load pre-computed energy matrices from files
         B, L, _ = x.shape
@@ -94,15 +108,28 @@ class SecondaryStructurePredictor(nn.Module):
             expanded_energy_matrix[i, :seq_len, :seq_len] = mat
         x = self.linear_in(x) 
         x = outer_concat(x, x)
+        
+        # Old version: concatenate energy matrix as extra channel
+        # como darle mas importancia a la energy matrix aca?
+        # sumar/mutiplicar la matriz a todos los canales? 
+        # usar conv2d de 1x1 q pase 1 canal a 64, y se sume a todos los canales de la outer concat
         # Add energy matrix as extra channel => (B, L, L, linear_out_dim*2 + 1)
-        x = torch.cat((x, expanded_energy_matrix.unsqueeze(-1)), dim=-1)
-        x = x.permute(0, 3, 1, 2) 
+        # x = torch.cat((x, expanded_energy_matrix.unsqueeze(-1)), dim=-1)
+        # x = x.permute(0, 3, 1, 2)
+
+        x = x.permute(0, 3, 1, 2)  # (B, conv_dim, L, L)
+
+        # Project energy matrix from 1 channel to conv_dim channels and add
+        energy = expanded_energy_matrix.unsqueeze(1)  # (B, 1, L, L)
+        energy = self.energy_proj(energy)              # (B, conv_dim, L, L)
+        x = x + energy 
 
         x = self.resnet(x)
-
-        x = x.mean(dim=-1) 
+        # B X 65 x L x L
+        x = x.mean(dim=-1) # std/max attn->L variable
+        # B x 65 x L x 1
         x = self.conv_out(x)
-
+        # B x 1 x L
 
         return x.squeeze(1)
 
