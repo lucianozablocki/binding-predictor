@@ -56,6 +56,7 @@ class BindingPredictor(nn.Module):
         self, embed_dim, num_blocks=2,
         conv_dim=64, kernel_size=3,
         negative_weight=0.1,
+        dropout=0.25,
         device='cpu', lr=1e-5
     ):
         super().__init__()
@@ -70,11 +71,14 @@ class BindingPredictor(nn.Module):
         # Old version: single conv1d output
         # self.conv_out = nn.Conv1d(conv_dim, 1, kernel_size=kernel_size, padding="same")
         # 2 conv1D out aca
+        self.dropout = nn.Dropout1d(p=dropout)
         self.conv_out = nn.Sequential(
             nn.Conv1d(conv_dim, conv_dim // 2, kernel_size=kernel_size, padding="same"),
             nn.ReLU(inplace=True),
+            nn.Dropout1d(p=dropout),
             nn.Conv1d(conv_dim // 2, conv_dim // 4, kernel_size=kernel_size, padding="same"),
             nn.ReLU(inplace=True),
+            nn.Dropout1d(p=dropout),
             nn.Conv1d(conv_dim // 4, 1, kernel_size=kernel_size, padding="same"),
         )
         self.device = device
@@ -128,6 +132,7 @@ class BindingPredictor(nn.Module):
         # B X 65 x L x L
         x = x.mean(dim=-1) # std/max attn->L variable
         # B x 65 x L x 1
+        # x = self.dropout(x)
         x = self.conv_out(x)
         # B x 1 x L
 
@@ -150,7 +155,7 @@ class BindingPredictor(nn.Module):
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-        self.lr_scheduler.step()
+        # self.lr_scheduler.step()
         loss_acum /= len(loader)
         f1_acum /= len(loader)
         return {"loss": loss_acum, "f1": f1_acum}
