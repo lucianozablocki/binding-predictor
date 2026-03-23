@@ -67,7 +67,9 @@ val_loader = get_binding_dataloader(
 
 embed_dim = get_embed_dim(train_loader)
 net = BindingPredictor(embed_dim=embed_dim, device=device, lr=args.lr)
-
+# print model amount of parameters
+num_params = sum(p.numel() for p in net.parameters())
+logger.info(f"Model initialized with {num_params} parameters")
 metrics_for_epoch = []
 logger.info(f"Run on {args.out_path}, with device {device}")
 logger.info(f"Training with file: {train_loader}, batch size: {args.batch_size}")
@@ -93,7 +95,7 @@ for epoch in range(args.max_epochs):
 pd.set_option('display.float_format','{:.3f}'.format)
 pd.DataFrame(metrics_for_epoch).to_csv(os.path.join(args.out_path, f"metrics.csv"), index=False)
 
-torch.save(
-    net.state_dict(),
-    os.path.join(args.out_path, f"weights.pmt")
-)
+# torch.save(
+#     net.state_dict(),
+#     os.path.join(args.out_path, f"weights.pmt")
+# )
