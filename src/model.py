@@ -93,9 +93,9 @@ class BindingPredictor(nn.Module):
         # self.energy_weights = nn.Parameter(torch.ones(20, 20))          # (20, 20) learnable
         self.energy_proj = nn.Conv2d(in_channels=1, out_channels=conv_dim, kernel_size=1, bias=False)
         # Old version: resnet and conv_out with conv_dim+1 channels (energy matrix concatenated)
-        # self.resnet = ResNet2D(conv_dim+1, num_blocks, kernel_size)
-        # self.conv_out = nn.Conv1d(conv_dim+1, 1, kernel_size=kernel_size, padding="same")
-        self.resnet = ResNet2D(conv_dim, num_blocks, kernel_size=3)
+        self.resnet = ResNet2D(conv_dim+1, num_blocks, kernel_size=3)
+        self.conv_out = nn.Conv1d(conv_dim+1, 1, kernel_size=kernel_size, padding="same")
+        # self.resnet = ResNet2D(conv_dim, num_blocks, kernel_size=3)
         # Old version: 2 conv1D out
         # self.conv_out = nn.Sequential(
         #     nn.Conv1d(conv_dim, conv_dim // 2, kernel_size=kernel_size, padding="same"),
@@ -106,7 +106,7 @@ class BindingPredictor(nn.Module):
         #     nn.Dropout1d(p=dropout),
         #     nn.Conv1d(conv_dim // 4, 1, kernel_size=kernel_size, padding="same"),
         # )
-        self.conv_out = nn.Conv1d(conv_dim, 1, kernel_size=kernel_size, padding="same")
+        # self.conv_out = nn.Conv1d(conv_dim, 1, kernel_size=kernel_size, padding="same")
         self.device = device
         self.class_weight = torch.tensor([negative_weight, 1.0]).float().to(self.device)
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
@@ -145,15 +145,14 @@ class BindingPredictor(nn.Module):
         # sumar/mutiplicar la matriz a todos los canales? 
         # usar conv2d de 1x1 q pase 1 canal a 64, y se sume a todos los canales de la outer concat
         # Add energy matrix as extra channel => (B, L, L, linear_out_dim*2 + 1)
-        # x = torch.cat((x, expanded_energy_matrix.unsqueeze(-1)), dim=-1)
-        # x = x.permute(0, 3, 1, 2)
+        x = torch.cat((x, expanded_energy_matrix.unsqueeze(-1)), dim=-1)
 
         x = x.permute(0, 3, 1, 2)  # (B, conv_dim, L, L)
 
-        # Project energy matrix from 1 channel to conv_dim channels and add
-        energy = expanded_energy_matrix.unsqueeze(1)  # (B, 1, L, L)
-        energy = self.energy_proj(energy)              # (B, conv_dim, L, L)
-        x = x + energy
+        # # Project energy matrix from 1 channel to conv_dim channels and add
+        # energy = expanded_energy_matrix.unsqueeze(1)  # (B, 1, L, L)
+        # energy = self.energy_proj(energy)              # (B, conv_dim, L, L)
+        # x = x + energy
 
         x = self.resnet(x)
         # B X 65 x L x L
