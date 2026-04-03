@@ -80,38 +80,20 @@ class BindingPredictor(nn.Module):
         self, embed_dim, num_blocks=1,
         conv_dim=64, kernel_size=16,
         negative_weight=0.1,
-        energy_matrix_path=DEFAULT_ENERGY_MATRIX_PATH,
+        energy_emb_dim=32,
         device='cpu', lr=1e-5
     ):
         super().__init__()
         self.lr = lr
         self.threshold = 0.1
         self.linear_in = nn.Linear(embed_dim, (int) (conv_dim/2))
-        # Learnable energy expansion: fixed 20x20 matrix scaled by learnable weights
-        energy_np = read_energy_matrix(energy_matrix_path)
-        self.register_buffer('energy_matrix', torch.tensor(energy_np))  # (20, 20) fixed
-        self.energy_weights = nn.Parameter(torch.ones(20, 20))          # (20, 20) learnable
-        self.energy_proj = nn.Conv2d(in_channels=1, out_channels=conv_dim, kernel_size=1, bias=False)
-        # Old version: resnet and conv_out with conv_dim+1 channels (energy matrix concatenated)
-        # self.resnet = ResNet2D(conv_dim+1, num_blocks, kernel_size=3)
-        # self.conv_out = nn.Conv1d(conv_dim+1, 1, kernel_size=kernel_size, padding="same")
-        self.conv_out = nn.Conv1d(conv_dim, 1, kernel_size=kernel_size, padding="same")
-        # self.resnet = ResNet2D(conv_dim, num_blocks, kernel_size=3)
-        # Old version: 2 conv1D out
-        # self.conv_out = nn.Sequential(
-        #     nn.Conv1d(conv_dim, conv_dim // 2, kernel_size=kernel_size, padding="same"),
-        #     nn.ReLU(inplace=True),
-        #     nn.Dropout1d(p=dropout),
-        #     nn.Conv1d(conv_dim // 2, conv_dim // 4, kernel_size=kernel_size, padding="same"),
-        #     nn.ReLU(inplace=True),
-        #     nn.Dropout1d(p=dropout),
-        #     nn.Conv1d(conv_dim // 4, 1, kernel_size=kernel_size, padding="same"),
-        # )
-        # self.conv_out = nn.Conv1d(conv_dim, 1, kernel_size=kernel_size, padding="same")
+        # After concat with energy embedding: linear_out + energy_emb_dim per position
+        # outer_concat doubles that: 2 * (conv_dim/2 + energy_emb_dim) channels
+        outer_dim = 2 * (int(conv_dim/2) + energy_emb_dim)
+        self.conv_out = nn.Conv1d(outer_dim, 1, kernel_size=kernel_size, padding="same")
         self.device = device
         self.class_weight = torch.tensor([negative_weight, 1.0]).float().to(self.device)
         self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        # self.lr_scheduler = LinearLR(self.optimizer, start_factor=1.0, end_factor=0.1, total_iters=2000)
 
         self.to(device)
 
@@ -124,40 +106,17 @@ class BindingPredictor(nn.Module):
         return loss
 
     # configurar si usar energy matrix o no, como ablacion
-    def forward(self, x, accessions):
+    def forward(self, x, energy_embs):
         B, L, _ = x.shape
 
-        # Learnable energy expansion: W_ij * E_ij for each AA pair
-        # Recover AA indices from one-hot input
-        aa_indices = x.argmax(dim=-1)  # (B, L)
-        scaled_energy = self.energy_weights * self.energy_matrix  # (20, 20)
-        # Expand to (B, L, L) using AA indices
-        expanded_energy_matrix = scaled_energy[aa_indices.unsqueeze(2), aa_indices.unsqueeze(1)]  # (B, L, L)
+        x = self.linear_in(x)  # (B, L, 32)
+        x = torch.cat([x, energy_embs], dim=-1)  # (B, L, 32 + 32)
+        x = outer_concat(x, x)  # (B, L, L, 128)
 
-        x = self.linear_in(x)
-        x = outer_concat(x, x)
-        
-        # Old version: concatenate energy matrix as extra channel
-        # como darle mas importancia a la energy matrix aca?
-        # sumar/mutiplicar la matriz a todos los canales? 
-        # usar conv2d de 1x1 q pase 1 canal a 64, y se sume a todos los canales de la outer concat
-        # Add energy matrix as extra channel => (B, L, L, linear_out_dim*2 + 1)
-        # x = torch.cat((x, expanded_energy_matrix.unsqueeze(-1)), dim=-1)
+        x = x.permute(0, 3, 1, 2)  # (B, 128, L, L)
 
-        x = x.permute(0, 3, 1, 2)  # (B, conv_dim, L, L)
-
-        # Project energy matrix from 1 channel to conv_dim channels and add
-        energy = expanded_energy_matrix.unsqueeze(1)  # (B, 1, L, L)
-        energy = self.energy_proj(energy)              # (B, conv_dim, L, L)
-        x = x + energy
-
-        # x = self.resnet(x)
-        # B X 65 x L x L
-        x = x.mean(dim=-1) # std/max attn->L variable
-        # B x 65 x L x 1
-        # x = self.dropout(x)
-        x = self.conv_out(x)
-        # B x 1 x L
+        x = x.mean(dim=-1)  # (B, 128, L)
+        x = self.conv_out(x)  # (B, 1, L)
 
         return x.squeeze(1)
 
@@ -168,8 +127,8 @@ class BindingPredictor(nn.Module):
         for batch in tqdm(loader):
             X = batch[0].to(self.device)
             y = batch[1].to(self.device)
-            accessions = batch[3]  # 4th element contains accession IDs
-            y_pred = self(X, accessions)
+            energy_embs = batch[4].to(self.device)
+            y_pred = self(X, energy_embs)
             # print(f"y_pred size: {y_pred.shape}") # torch.Size([4, 512, 512])
             # print(f"y size: {y.shape}") # torch.Size([4, 512, 512])
             loss = self.loss_func(y_pred, y)
@@ -190,9 +149,9 @@ class BindingPredictor(nn.Module):
         for batch in loader:
             X = batch[0].to(self.device)
             y = batch[1].to(self.device)
-            accessions = batch[3]  # 4th element contains accession IDs
+            energy_embs = batch[4].to(self.device)
             with torch.no_grad():
-                y_pred = self(X, accessions)
+                y_pred = self(X, energy_embs)
                 loss = self.loss_func(y_pred, y)
             loss_acum += loss.item()
 

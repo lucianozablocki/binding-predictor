@@ -3,7 +3,9 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from collections import defaultdict
+from pathlib import Path
 from tqdm import tqdm
+import numpy as np
 from helper_functions import read_fasta, setup_logger 
 
 # Amino Acid vocabulary for one-hot encoding
@@ -43,9 +45,10 @@ def one_hot_encode(sequence_str, aa_to_id=AA_TO_ID, num_classes=NUM_AMINO_ACIDS)
 
 
 class BindingDataset(Dataset):
-    def __init__(self, tsv_file, seq_dir, aa_to_id=AA_TO_ID):
+    def __init__(self, tsv_file, seq_dir, energy_emb_dir='data/energy_embeddings', aa_to_id=AA_TO_ID):
         self.data = []
         self.aa_to_id = aa_to_id
+        self.energy_emb_dir = Path(energy_emb_dir)
         
         # 1. Aggregate regions by Accession ID to handle multiple sites per protein
         # Mapping: accession -> list of (start, end) tuples
@@ -117,7 +120,20 @@ class BindingDataset(Dataset):
                     else:
                         logger.error(f'For some magical reason the start position is overindexed at {accession} pos {s}')
                 
-                self.data.append((encoded_seq, target_mask, accession))
+                # Load precomputed energy embedding (L, 32)
+                emb_path = self.energy_emb_dir / f"{accession}.npy"
+                if not emb_path.exists():
+                    raise FileNotFoundError(
+                        f"Missing energy embedding for {accession} at {emb_path}. "
+                        f"Run precompute_energy_embeddings.py first."
+                    )
+                energy_emb = torch.from_numpy(np.load(emb_path)).float()
+                if energy_emb.shape[0] != seq_len:
+                    raise ValueError(
+                        f"Energy embedding length {energy_emb.shape[0]} != sequence length {seq_len} for {accession}"
+                    )
+
+                self.data.append((encoded_seq, target_mask, accession, energy_emb))
                 
             except FileNotFoundError as e:
                 # print(f"Missing FASTA for {accession}")
@@ -141,8 +157,10 @@ def pad_collate(batch):
         padded_seqs: (Batch, Max_Len, NUM_AMINO_ACIDS) - one-hot encoded
         padded_targets: (Batch, Max_Len)
         lengths: (Batch) - useful for packing sequences or masking loss later
+        accessions: tuple of accession IDs
+        padded_energy_embs: (Batch, Max_Len, 32) - energy embeddings
     """
-    (seqs, targets, accessions) = zip(*batch)
+    (seqs, targets, accessions, energy_embs) = zip(*batch)
     
     # Calculate lengths (optional, but often useful for masking loss)
     lengths = torch.tensor([len(s) for s in seqs])
@@ -153,11 +171,14 @@ def pad_collate(batch):
     # Pad targets with 0 (background class) BE AWARE THIS MIGHT BE WRONG!
     padded_targets = pad_sequence(targets, batch_first=True, padding_value=-1)
     
-    return padded_seqs, padded_targets, lengths, accessions
+    # Pad energy embeddings with zeros (seq_len, 32) -> (batch, max_len, 32)
+    padded_energy_embs = pad_sequence(energy_embs, batch_first=True, padding_value=0.0)
+    
+    return padded_seqs, padded_targets, lengths, accessions, padded_energy_embs
 
 
-def get_binding_dataloader(tsv_file, seq_dir, batch_size=32, shuffle=True):
-    dataset = BindingDataset(tsv_file, seq_dir)
+def get_binding_dataloader(tsv_file, seq_dir, energy_emb_dir='data/energy_embeddings', batch_size=32, shuffle=True):
+    dataset = BindingDataset(tsv_file, seq_dir, energy_emb_dir=energy_emb_dir)
     # logger.error(len(dataset))
     loader = DataLoader(
         dataset, 

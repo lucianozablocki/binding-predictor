@@ -23,6 +23,7 @@ parser.add_argument("--batch_size", default=4, type=int, help="Batch size to use
 parser.add_argument("--max_epochs", default=15, type=int, help="Maximum number of training epochs.")
 parser.add_argument("--lr", default=1e-4, type=float, help="Learning rate for the training.")
 parser.add_argument("--out_path", default='results', type=str, help="Path to write predictions (base pairs of test partition), weights and logs")
+parser.add_argument("--energy_emb_dir", default='data/energy_embeddings', type=str, help="Directory with precomputed energy embeddings (.npy)")
 
 args = parser.parse_args()
 
@@ -45,15 +46,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+logger.info("using lr: {}".format(args.lr))
+
 train_loader = get_binding_dataloader(
     tsv_file='iupred2a/data/train.tsv',
     seq_dir='iupred2a/data/seq',
+    energy_emb_dir=args.energy_emb_dir,
     batch_size=args.batch_size
 )
 
 val_loader = get_binding_dataloader(
     tsv_file='iupred2a/data/val.tsv',
     seq_dir='iupred2a/data/seq',
+    energy_emb_dir=args.energy_emb_dir,
     batch_size=args.batch_size,
 )
 
