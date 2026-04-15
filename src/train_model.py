@@ -2,13 +2,15 @@ import numpy as np
 import argparse
 import torch
 import logging
+import sys
 import os
+import csv
 import pandas as pd
+import optuna
 
 from model import BindingPredictor
-# from dataset import create_dataloader
-from binding_dataset import get_binding_dataloader
-from utils import get_embed_dim
+from binding_dataset import BindingDataset, pad_collate
+from torch.utils.data import DataLoader
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -17,85 +19,137 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 parser = argparse.ArgumentParser()
 
-# parser.add_argument("--train_partition_path", type=str, help="The path of the train partition.")
-# parser.add_argument("--val_partition_path", type=str, help="The path of the validation partition.")
-parser.add_argument("--batch_size", default=4, type=int, help="Batch size to use in forward pass.")
-parser.add_argument("--max_epochs", default=15, type=int, help="Maximum number of training epochs.")
-parser.add_argument("--lr", default=1e-4, type=float, help="Learning rate for the training.")
-parser.add_argument("--out_path", default='results', type=str, help="Path to write predictions (base pairs of test partition), weights and logs")
+parser.add_argument("--max_epochs", default=350, type=int, help="Maximum number of training epochs.")
+parser.add_argument("--n_trials", default=50, type=int, help="Number of Optuna trials.")
+parser.add_argument("--out_path", default='results', type=str, help="Path to write results and logs.")
 
 args = parser.parse_args()
 
-if torch.cuda.is_available():
-    device=f"cuda:{torch.cuda.current_device()}"
-else:
-    device='cpu'
-# device='cuda:1'
+# if torch.cuda.is_available():
+#     device = f"cuda:{torch.cuda.current_device()}"
+# else:
+#     device = 'cpu'
+
+device="cuda:0"
+
 os.makedirs(args.out_path, exist_ok=True)
 
-# embeddings_path = f"data/embeddings/{args.emb}.h5"
-
 logging.basicConfig(
-    level=logging.DEBUG,  # Set the minimum log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+    level=logging.INFO,
     format='%(asctime)s - %(name)s.%(lineno)d - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(),  # Log to console
-        logging.FileHandler(os.path.join(args.out_path, f'log.txt'), mode='w'),
+        logging.StreamHandler(),
+        logging.FileHandler(os.path.join(args.out_path, 'log.txt'), mode='w'),
     ]
 )
 logger = logging.getLogger(__name__)
 
-train_loader = get_binding_dataloader(
+def handle_exception(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, KeyboardInterrupt):
+        sys.__excepthook__(exc_type, exc_value, exc_traceback)
+        return
+    logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+
+sys.excepthook = handle_exception
+
+# Load datasets once, create loaders per trial (batch_size may vary)
+train_dataset = BindingDataset(
     tsv_file='iupred2a/data/train.tsv',
     seq_dir='iupred2a/data/seq',
-    batch_size=args.batch_size
 )
 
-val_loader = get_binding_dataloader(
+val_dataset = BindingDataset(
     tsv_file='iupred2a/data/val.tsv',
     seq_dir='iupred2a/data/seq',
-    batch_size=args.batch_size,
 )
 
-# if args.val_partition_path:
-#     val_loader = create_dataloader(
-#         embeddings_path,
-#         args.val_partition_path,
-#         args.batch_size,
-#         False
-#     )
+embed_dim = 20  # one-hot encoded amino acids
 
-embed_dim = get_embed_dim(train_loader)
-net = BindingPredictor(embed_dim=embed_dim, device=device, lr=args.lr)
-# print model amount of parameters
-num_params = sum(p.numel() for p in net.parameters())
-logger.info(f"Model initialized with {num_params} parameters")
-metrics_for_epoch = []
-logger.info(f"Run on {args.out_path}, with device {device}")
-logger.info(f"Training with file: {train_loader}, batch size: {args.batch_size}")
-# if args.val_partition_path:
-#     logger.info(f"Validation enabled, using file: {args.val_partition_path}")
 
-for epoch in range(args.max_epochs):
-    logger.info(f"Starting epoch {epoch+1}")
-    metrics = net.fit(train_loader)
-    
-    metrics = {f"train_{k}": v for k, v in metrics.items()}
+def objective(trial):
+    # Model hyperparameters
+    linear_dim = trial.suggest_categorical("linear_dim", [8, 16, 32, 64])
+    kernel_size = trial.suggest_categorical("kernel_size", [3, 5, 9, 16, 21])
+    reduce_op = trial.suggest_categorical("reduce_op", ["mean", "max", "std"])
 
-    # if args.val_partition_path:
-    logger.info("Running validation inference")
-    val_metrics = net.test(val_loader)
-       
-    val_metrics = {f"val_{k}": v for k, v in val_metrics.items()}
-    metrics.update(val_metrics)
+    # Training hyperparameters
+    lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
+    optimizer_name = trial.suggest_categorical("optimizer", ["Adam", "SGD", "AdamW"])
+    batch_size = trial.suggest_categorical("batch_size", [4])
 
-    metrics_for_epoch.append(metrics)
-    logger.info(" ".join([f"{k}: {v:.3f}" for k, v in metrics.items()]))    
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=pad_collate)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=pad_collate)
 
-pd.set_option('display.float_format','{:.3f}'.format)
-pd.DataFrame(metrics_for_epoch).to_csv(os.path.join(args.out_path, f"metrics.csv"), index=False)
+    net = BindingPredictor(
+        embed_dim=embed_dim,
+        linear_dim=linear_dim,
+        kernel_size=kernel_size,
+        reduce_op=reduce_op,
+        device=device,
+    )
 
-# torch.save(
-#     net.state_dict(),
-#     os.path.join(args.out_path, f"weights.pmt")
-# )
+    num_params = sum(p.numel() for p in net.parameters())
+    logger.info(f"Trial {trial.number}: linear_dim={linear_dim}, kernel_size={kernel_size}, "
+                f"reduce_op={reduce_op}, lr={lr:.2e}, optimizer={optimizer_name}, params={num_params}, batch_size={batch_size}")
+
+    # Per-trial metrics CSV with parameters as header comments
+    trial_dir = os.path.join(args.out_path, "trials")
+    os.makedirs(trial_dir, exist_ok=True)
+    metrics_path = os.path.join(trial_dir, f"trial_{trial.number:03d}.csv")
+    with open(metrics_path, 'w', newline='') as f:
+        f.write(f"# trial={trial.number} linear_dim={linear_dim} kernel_size={kernel_size} "
+                f"reduce_op={reduce_op} lr={lr:.2e} optimizer={optimizer_name} "
+                f"params={num_params} batch_size={batch_size}\n")
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "train_loss", "train_f1", "val_loss", "val_f1"])
+
+    if optimizer_name == "Adam":
+        optimizer = torch.optim.Adam(net.parameters(), lr=lr)
+    elif optimizer_name == "SGD":
+        optimizer = torch.optim.SGD(net.parameters(), lr=lr)
+    elif optimizer_name == "AdamW":
+        optimizer = torch.optim.AdamW(net.parameters(), lr=lr)
+
+    best_val_f1 = 0.0
+    for epoch in range(args.max_epochs):
+        train_metrics = net.fit(train_loader, optimizer)
+        val_metrics = net.test(val_loader)
+
+        logger.info(f"  Epoch {epoch+1}: train_loss={train_metrics['loss']:.4f} "
+                     f"train_f1={train_metrics['f1']:.4f} "
+                     f"val_loss={val_metrics['loss']:.4f} "
+                     f"val_f1={val_metrics['f1']:.4f}")
+
+        # Append to per-trial CSV (flush each row so data survives crashes)
+        with open(metrics_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch+1, f"{train_metrics['loss']:.4f}", f"{train_metrics['f1']:.4f}",
+                             f"{val_metrics['loss']:.4f}", f"{val_metrics['f1']:.4f}"])
+
+        best_val_f1 = max(best_val_f1, val_metrics["f1"])
+
+        # Report intermediate value for pruning
+        trial.report(val_metrics["f1"], epoch)
+        if trial.should_prune():
+            raise optuna.exceptions.TrialPruned()
+
+    return best_val_f1
+
+
+study = optuna.create_study(
+    direction="maximize",
+    pruner=optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=100),
+    study_name="binding_predictor_hparam_search",
+)
+
+logger.info(f"Starting Optuna study with {args.n_trials} trials on {device}")
+study.optimize(objective, n_trials=args.n_trials, gc_after_trial=True)
+
+# Log and save results
+logger.info(f"Best trial: {study.best_trial.number}")
+logger.info(f"  Best val F1: {study.best_trial.value:.4f}")
+logger.info(f"  Best params: {study.best_trial.params}")
+
+trials_df = study.trials_dataframe()
+trials_df.to_csv(os.path.join(args.out_path, "optuna_trials.csv"), index=False)
+logger.info(f"All trial results saved to {os.path.join(args.out_path, 'optuna_trials.csv')}")

@@ -78,40 +78,25 @@ class ResNet2D(nn.Module):
 class BindingPredictor(nn.Module):
     def __init__(
         self, embed_dim, num_blocks=1,
-        conv_dim=64, kernel_size=16,
+        linear_dim=32, kernel_size=16,
+        reduce_op='mean',
         negative_weight=0.1,
         energy_matrix_path=DEFAULT_ENERGY_MATRIX_PATH,
-        device='cpu', lr=1e-5
+        device='cpu'
     ):
         super().__init__()
-        self.lr = lr
+        conv_dim = linear_dim * 2  # outer_concat doubles the dim
+        self.reduce_op = reduce_op
         self.threshold = 0.1
-        self.linear_in = nn.Linear(embed_dim, (int) (conv_dim/2))
+        self.linear_in = nn.Linear(embed_dim, linear_dim)
         # Learnable energy expansion: fixed 20x20 matrix scaled by learnable weights
         # energy_np = read_energy_matrix(energy_matrix_path)
         # self.register_buffer('energy_matrix', torch.tensor(energy_np))  # (20, 20) fixed
         # self.energy_weights = nn.Parameter(torch.ones(20, 20))          # (20, 20) learnable
         self.energy_proj = nn.Conv2d(in_channels=1, out_channels=conv_dim, kernel_size=1, bias=False)
-        # Old version: resnet and conv_out with conv_dim+1 channels (energy matrix concatenated)
-        # self.resnet = ResNet2D(conv_dim+1, num_blocks, kernel_size=3)
-        # self.conv_out = nn.Conv1d(conv_dim+1, 1, kernel_size=kernel_size, padding="same")
         self.conv_out = nn.Conv1d(conv_dim, 1, kernel_size=kernel_size, padding="same")
-        # self.resnet = ResNet2D(conv_dim, num_blocks, kernel_size=3)
-        # Old version: 2 conv1D out
-        # self.conv_out = nn.Sequential(
-        #     nn.Conv1d(conv_dim, conv_dim // 2, kernel_size=kernel_size, padding="same"),
-        #     nn.ReLU(inplace=True),
-        #     nn.Dropout1d(p=dropout),
-        #     nn.Conv1d(conv_dim // 2, conv_dim // 4, kernel_size=kernel_size, padding="same"),
-        #     nn.ReLU(inplace=True),
-        #     nn.Dropout1d(p=dropout),
-        #     nn.Conv1d(conv_dim // 4, 1, kernel_size=kernel_size, padding="same"),
-        # )
-        # self.conv_out = nn.Conv1d(conv_dim, 1, kernel_size=kernel_size, padding="same")
         self.device = device
         self.class_weight = torch.tensor([negative_weight, 1.0]).float().to(self.device)
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-        # self.lr_scheduler = LinearLR(self.optimizer, start_factor=1.0, end_factor=0.1, total_iters=2000)
 
         self.to(device)
 
@@ -123,14 +108,19 @@ class BindingPredictor(nn.Module):
         loss = binary_cross_entropy_with_logits(yhat[mask], y[mask])
         return loss
 
+    _energy_cache = {}
+
     # configurar si usar energy matrix o no, como ablacion
     def forward(self, x, accessions):
         B, L, _ = x.shape
 
         energy_matrices = []
         for acc in accessions:
-            mat = np.load(f"{ENERGY_MATRICES_DIR}/{acc}.npy")
-            energy_matrices.append(torch.tensor(mat, dtype=x.dtype, device=x.device))
+            if acc not in self._energy_cache:
+                self._energy_cache[acc] = torch.tensor(
+                    np.load(f"{ENERGY_MATRICES_DIR}/{acc}.npy"), dtype=torch.float32
+                )
+            energy_matrices.append(self._energy_cache[acc].to(dtype=x.dtype, device=x.device))
         
         # Pad energy matrices to match the max sequence length in batch
         expanded_energy_matrix = torch.zeros((B, L, L), dtype=x.dtype, device=x.device)
@@ -157,7 +147,12 @@ class BindingPredictor(nn.Module):
 
         # x = self.resnet(x)
         # B X 65 x L x L
-        x = x.mean(dim=-1) # std/max attn->L variable
+        if self.reduce_op == 'mean':
+            x = x.mean(dim=-1)
+        elif self.reduce_op == 'max':
+            x = x.max(dim=-1).values
+        elif self.reduce_op == 'std':
+            x = x.std(dim=-1)
         # B x 65 x L x 1
         # x = self.dropout(x)
         x = self.conv_out(x)
@@ -165,7 +160,7 @@ class BindingPredictor(nn.Module):
 
         return x.squeeze(1)
 
-    def fit(self, loader):
+    def fit(self, loader, optimizer):
         self.train()
         loss_acum = 0
         f1_acum = 0
@@ -174,15 +169,12 @@ class BindingPredictor(nn.Module):
             y = batch[1].to(self.device)
             accessions = batch[3]  # 4th element contains accession IDs
             y_pred = self(X, accessions)
-            # print(f"y_pred size: {y_pred.shape}") # torch.Size([4, 512, 512])
-            # print(f"y size: {y.shape}") # torch.Size([4, 512, 512])
             loss = self.loss_func(y_pred, y)
             loss_acum += loss.item()
             f1_acum += binary_f1(y.cpu(), y_pred.detach().cpu())
-            self.optimizer.zero_grad()
+            optimizer.zero_grad()
             loss.backward()
-            self.optimizer.step()
-        # self.lr_scheduler.step()
+            optimizer.step()
         loss_acum /= len(loader)
         f1_acum /= len(loader)
         return {"loss": loss_acum, "f1": f1_acum}
