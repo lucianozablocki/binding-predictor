@@ -19,6 +19,9 @@ warnings.filterwarnings("ignore", category=UserWarning)
 
 parser = argparse.ArgumentParser()
 
+parser.add_argument("--zone_annotations", nargs="+", default=["disorder"],
+                    help="Annotation labels to define the positive zone for split confusion metrics.")
+
 parser.add_argument("--max_epochs", default=350, type=int, help="Maximum number of training epochs.")
 parser.add_argument("--n_trials", default=50, type=int, help="Number of Optuna trials.")
 parser.add_argument("--out_path", default='results', type=str, help="Path to write results and logs.")
@@ -99,9 +102,17 @@ def objective(trial):
     with open(metrics_path, 'w', newline='') as f:
         f.write(f"# trial={trial.number} linear_dim={linear_dim} kernel_size={kernel_size} "
                 f"reduce_op={reduce_op} lr={lr:.2e} optimizer={optimizer_name} "
-                f"params={num_params} batch_size={batch_size}\n")
+            f"params={num_params} batch_size={batch_size} zone_annotations={args.zone_annotations}\n")
         writer = csv.writer(f)
-        writer.writerow(["epoch", "train_loss", "train_f1", "val_loss", "val_f1"])
+        writer.writerow([
+            "epoch",
+            "train_loss", "train_f1", "train_tn", "train_fp", "train_fn", "train_tp",
+            "train_zone_tn", "train_zone_fp", "train_zone_fn", "train_zone_tp",
+            "train_non_zone_tn", "train_non_zone_fp", "train_non_zone_fn", "train_non_zone_tp",
+            "val_loss", "val_f1", "val_tn", "val_fp", "val_fn", "val_tp",
+            "val_zone_tn", "val_zone_fp", "val_zone_fn", "val_zone_tp",
+            "val_non_zone_tn", "val_non_zone_fp", "val_non_zone_fn", "val_non_zone_tp",
+        ])
 
     if optimizer_name == "Adam":
         optimizer = torch.optim.Adam(net.parameters(), lr=lr)
@@ -118,13 +129,24 @@ def objective(trial):
         logger.info(f"  Epoch {epoch+1}: train_loss={train_metrics['loss']:.4f} "
                      f"train_f1={train_metrics['f1']:.4f} "
                      f"val_loss={val_metrics['loss']:.4f} "
-                     f"val_f1={val_metrics['f1']:.4f}")
+                     f"val_f1={val_metrics['f1']:.4f} "
+                     f"val_zone_tp={val_metrics['zone_tp']} "
+                     f"val_non_zone_tp={val_metrics['non_zone_tp']}")
 
         # Append to per-trial CSV (flush each row so data survives crashes)
         with open(metrics_path, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch+1, f"{train_metrics['loss']:.4f}", f"{train_metrics['f1']:.4f}",
-                             f"{val_metrics['loss']:.4f}", f"{val_metrics['f1']:.4f}"])
+            writer.writerow([
+                epoch + 1,
+                f"{train_metrics['loss']:.4f}", f"{train_metrics['f1']:.4f}",
+                train_metrics['tn'], train_metrics['fp'], train_metrics['fn'], train_metrics['tp'],
+                train_metrics['zone_tn'], train_metrics['zone_fp'], train_metrics['zone_fn'], train_metrics['zone_tp'],
+                train_metrics['non_zone_tn'], train_metrics['non_zone_fp'], train_metrics['non_zone_fn'], train_metrics['non_zone_tp'],
+                f"{val_metrics['loss']:.4f}", f"{val_metrics['f1']:.4f}",
+                val_metrics['tn'], val_metrics['fp'], val_metrics['fn'], val_metrics['tp'],
+                val_metrics['zone_tn'], val_metrics['zone_fp'], val_metrics['zone_fn'], val_metrics['zone_tp'],
+                val_metrics['non_zone_tn'], val_metrics['non_zone_fp'], val_metrics['non_zone_fn'], val_metrics['non_zone_tp'],
+            ])
 
         best_val_f1 = max(best_val_f1, val_metrics["f1"])
 

@@ -164,39 +164,126 @@ class BindingPredictor(nn.Module):
         self.train()
         loss_acum = 0
         f1_acum = 0
+        tn_acum = 0
+        fp_acum = 0
+        fn_acum = 0
+        tp_acum = 0
+        zone_tn_acum = 0
+        zone_fp_acum = 0
+        zone_fn_acum = 0
+        zone_tp_acum = 0
+        non_zone_tn_acum = 0
+        non_zone_fp_acum = 0
+        non_zone_fn_acum = 0
+        non_zone_tp_acum = 0
+        lens = 0
         for batch in tqdm(loader):
             X = batch[0].to(self.device)
+            Y = batch[1].to(self.device)
+            zone_mask = batch[2].to(self.device)
+            lens += (Y != -1).sum().item()
             y = batch[1].to(self.device)
-            accessions = batch[3]  # 4th element contains accession IDs
+            accessions = batch[4]  # 5th element contains accession IDs
             y_pred = self(X, accessions)
             loss = self.loss_func(y_pred, y)
             loss_acum += loss.item()
-            f1_acum += binary_f1(y.cpu(), y_pred.detach().cpu())
+            metrics = binary_f1(y.cpu(), y_pred.detach().cpu(), zone_batch=zone_mask.cpu())
+            f1_acum += metrics["f1"]
+            tn_acum += metrics["tn"]
+            fp_acum += metrics["fp"]
+            fn_acum += metrics["fn"]
+            tp_acum += metrics["tp"]
+            zone_tn_acum += metrics["zone_tn"]
+            zone_fp_acum += metrics["zone_fp"]
+            zone_fn_acum += metrics["zone_fn"]
+            zone_tp_acum += metrics["zone_tp"]
+            non_zone_tn_acum += metrics["non_zone_tn"]
+            non_zone_fp_acum += metrics["non_zone_fp"]
+            non_zone_fn_acum += metrics["non_zone_fn"]
+            non_zone_tp_acum += metrics["non_zone_tp"]
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+        assert (tn_acum + fp_acum + fn_acum + tp_acum == lens), "Confusion matrix counts do not sum to total samples"
+        assert (zone_tn_acum + zone_fp_acum + zone_fn_acum + zone_tp_acum + non_zone_tn_acum + non_zone_fp_acum + non_zone_fn_acum + non_zone_tp_acum == lens), "Zone confusion counts do not sum to total samples"
         loss_acum /= len(loader)
         f1_acum /= len(loader)
-        return {"loss": loss_acum, "f1": f1_acum}
+        return {
+            "loss": loss_acum,
+            "f1": f1_acum,
+            "tn": tn_acum,
+            "fp": fp_acum,
+            "fn": fn_acum,
+            "tp": tp_acum,
+            "zone_tn": zone_tn_acum,
+            "zone_fp": zone_fp_acum,
+            "zone_fn": zone_fn_acum,
+            "zone_tp": zone_tp_acum,
+            "non_zone_tn": non_zone_tn_acum,
+            "non_zone_fp": non_zone_fp_acum,
+            "non_zone_fn": non_zone_fn_acum,
+            "non_zone_tp": non_zone_tp_acum,
+        }
 
     def test(self, loader):
         self.eval()
         loss_acum = 0
         f1_acum = 0
+        tn_acum = 0
+        fp_acum = 0
+        fn_acum = 0
+        tp_acum = 0
+        zone_tn_acum = 0
+        zone_fp_acum = 0
+        zone_fn_acum = 0
+        zone_tp_acum = 0
+        non_zone_tn_acum = 0
+        non_zone_fp_acum = 0
+        non_zone_fn_acum = 0
+        non_zone_tp_acum = 0
         for batch in loader:
             X = batch[0].to(self.device)
             y = batch[1].to(self.device)
-            accessions = batch[3]  # 4th element contains accession IDs
+            zone_mask = batch[2].to(self.device)
+            accessions = batch[4]  # 5th element contains accession IDs
             with torch.no_grad():
                 y_pred = self(X, accessions)
                 loss = self.loss_func(y_pred, y)
             loss_acum += loss.item()
 
-            f1_acum += binary_f1(y.cpu(), y_pred.detach().cpu())
+            metrics = binary_f1(y.cpu(), y_pred.detach().cpu(), zone_batch=zone_mask.cpu())
+            f1_acum += metrics["f1"]
+            tn_acum += metrics["tn"]
+            fp_acum += metrics["fp"]
+            fn_acum += metrics["fn"]
+            tp_acum += metrics["tp"]
+            zone_tn_acum += metrics["zone_tn"]
+            zone_fp_acum += metrics["zone_fp"]
+            zone_fn_acum += metrics["zone_fn"]
+            zone_tp_acum += metrics["zone_tp"]
+            non_zone_tn_acum += metrics["non_zone_tn"]
+            non_zone_fp_acum += metrics["non_zone_fp"]
+            non_zone_fn_acum += metrics["non_zone_fn"]
+            non_zone_tp_acum += metrics["non_zone_tp"]
         loss_acum /= len(loader)
         f1_acum /= len(loader)
 
-        return {"loss": loss_acum, "f1": f1_acum}
+        return {
+            "loss": loss_acum,
+            "f1": f1_acum,
+            "tn": tn_acum,
+            "fp": fp_acum,
+            "fn": fn_acum,
+            "tp": tp_acum,
+            "zone_tn": zone_tn_acum,
+            "zone_fp": zone_fp_acum,
+            "zone_fn": zone_fn_acum,
+            "zone_tp": zone_tp_acum,
+            "non_zone_tn": non_zone_tn_acum,
+            "non_zone_fp": non_zone_fp_acum,
+            "non_zone_fn": non_zone_fn_acum,
+            "non_zone_tp": non_zone_tp_acum,
+        }
 
     def pred(self, loader):
         self.eval()
