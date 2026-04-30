@@ -100,18 +100,18 @@ class BindingPredictor(nn.Module):
 
         self.to(device)
 
-    def loss_func(self, yhat, y):
-        """yhat and y are [N, M]"""
-        # print("yhat shape:", yhat.shape)
-        # print("y shape:", y.shape)
+    def loss_func(self, yhat, y, zone_mask=None):
+        """yhat and y are [N, M]. If zone_mask is given, only compute loss on zone positions."""
         mask = (y != -1)
+        if zone_mask is not None:
+            mask = mask & (zone_mask == 1)
         loss = binary_cross_entropy_with_logits(yhat[mask], y[mask])
         return loss
 
     _energy_cache = {}
 
     # configurar si usar energy matrix o no, como ablacion
-    def forward(self, x, accessions):
+    def forward(self, x, accessions, zone_mask=None):
         B, L, _ = x.shape
 
         energy_matrices = []
@@ -127,6 +127,16 @@ class BindingPredictor(nn.Module):
         for i, mat in enumerate(energy_matrices):
             seq_len = mat.shape[0]
             expanded_energy_matrix[i, :seq_len, :seq_len] = mat
+
+        if zone_mask is not None:
+            # Zero input features and pairwise energies for non-disorder positions.
+            # outer_concat builds every (i,j) pair, so zeroing both axes ensures
+            # any cell involving a non-disorder position is invisible to the model.
+            disorder = (zone_mask == 1).float()                          # (B, L)
+            x = x * disorder.unsqueeze(-1)                               # (B, L, 20)
+            expanded_energy_matrix = expanded_energy_matrix * (
+                disorder.unsqueeze(2) * disorder.unsqueeze(1)            # (B, L, L)
+            )
 
         x = self.linear_in(x)
         x = outer_concat(x, x)
@@ -184,8 +194,8 @@ class BindingPredictor(nn.Module):
             lens += (Y != -1).sum().item()
             y = batch[1].to(self.device)
             accessions = batch[4]  # 5th element contains accession IDs
-            y_pred = self(X, accessions)
-            loss = self.loss_func(y_pred, y)
+            y_pred = self(X, accessions, zone_mask=zone_mask)
+            loss = self.loss_func(y_pred, y, zone_mask=zone_mask)
             loss_acum += loss.item()
             metrics = binary_f1(y.cpu(), y_pred.detach().cpu(), zone_batch=zone_mask.cpu())
             f1_acum += metrics["f1"]
@@ -247,8 +257,8 @@ class BindingPredictor(nn.Module):
             zone_mask = batch[2].to(self.device)
             accessions = batch[4]  # 5th element contains accession IDs
             with torch.no_grad():
-                y_pred = self(X, accessions)
-                loss = self.loss_func(y_pred, y)
+                y_pred = self(X, accessions, zone_mask=zone_mask)
+                loss = self.loss_func(y_pred, y, zone_mask=zone_mask)
             loss_acum += loss.item()
 
             metrics = binary_f1(y.cpu(), y_pred.detach().cpu(), zone_batch=zone_mask.cpu())

@@ -59,12 +59,15 @@ sys.excepthook = handle_exception
 train_dataset = BindingDataset(
     tsv_file='iupred2a/data/train.tsv',
     seq_dir='iupred2a/data/seq',
+    zone_annotations=args.zone_annotations,
 )
-
+print(f"Loaded {len(train_dataset)} training proteins")
 val_dataset = BindingDataset(
     tsv_file='iupred2a/data/val.tsv',
     seq_dir='iupred2a/data/seq',
+    zone_annotations=args.zone_annotations,
 )
+print(f"Loaded {len(val_dataset)} validation proteins")
 
 embed_dim = 20  # one-hot encoded amino acids
 
