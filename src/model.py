@@ -80,7 +80,7 @@ class BindingPredictor(nn.Module):
         self, embed_dim, num_blocks=1,
         linear_dim=32, kernel_size=16,
         reduce_op='mean',
-        negative_weight=0.1,
+        pos_weight=1.0,
         energy_matrix_path=DEFAULT_ENERGY_MATRIX_PATH,
         device='cpu'
     ):
@@ -96,7 +96,7 @@ class BindingPredictor(nn.Module):
         self.energy_proj = nn.Conv2d(in_channels=1, out_channels=conv_dim, kernel_size=1, bias=False)
         self.conv_out = nn.Conv1d(conv_dim, 1, kernel_size=kernel_size, padding="same")
         self.device = device
-        self.class_weight = torch.tensor([negative_weight, 1.0]).float().to(self.device)
+        self.pos_weight = torch.tensor([pos_weight], dtype=torch.float32).to(self.device)
 
         self.to(device)
 
@@ -105,7 +105,9 @@ class BindingPredictor(nn.Module):
         # print("yhat shape:", yhat.shape)
         # print("y shape:", y.shape)
         mask = (y != -1)
-        loss = binary_cross_entropy_with_logits(yhat[mask], y[mask])
+        loss = binary_cross_entropy_with_logits(
+            yhat[mask], y[mask], pos_weight=self.pos_weight
+        )
         return loss
 
     _energy_cache = {}

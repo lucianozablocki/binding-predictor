@@ -89,6 +89,7 @@ def objective(trial):
         kernel_size=kernel_size,
         reduce_op=reduce_op,
         device=device,
+        pos_weight=3.48, # from positive_class_analysis/analyze_positive_class.py, computed on training partition
     )
 
     num_params = sum(p.numel() for p in net.parameters())
