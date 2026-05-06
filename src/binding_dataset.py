@@ -45,14 +45,16 @@ def one_hot_encode(sequence_str, aa_to_id=AA_TO_ID, num_classes=NUM_AMINO_ACIDS)
 
 
 class BindingDataset(Dataset):
-    def __init__(self, tsv_file, seq_dir, energy_emb_dir='data/energy_embeddings', aa_to_id=AA_TO_ID):
+    def __init__(self, tsv_file, seq_dir, zone_annotations=("disorder",), energy_emb_dir='data/energy_embeddings', aa_to_id=AA_TO_ID):
         self.data = []
         self.aa_to_id = aa_to_id
         self.energy_emb_dir = Path(energy_emb_dir)
+        self.zone_annotations = {label.strip().lower() for label in zone_annotations}
         
         # 1. Aggregate regions by Accession ID to handle multiple sites per protein
         # Mapping: accession -> list of (start, end) tuples
         accession_regions = defaultdict(list)
+        accession_zone_regions = defaultdict(list)
         
         logger.info("Parsing TSV file...")
         with open(tsv_file, 'r') as fn:
@@ -62,9 +64,10 @@ class BindingDataset(Dataset):
                     continue
                     
                 parts = line.split('\t')
+                annotation = parts[11].strip().lower() if len(parts) > 11 else ""
                 
                 # Check for protein binding annotation (Col 11)
-                if len(parts) > 11 and parts[11] == 'protein binding':
+                if annotation == 'protein binding':
                     accession = parts[0]
                     # Convert to int, handle 1-based indexing later
                     try:
@@ -73,6 +76,15 @@ class BindingDataset(Dataset):
                         accession_regions[accession].append((start, end))
                     except ValueError:
                         continue # Skip malformed lines
+
+                if annotation in self.zone_annotations:
+                    accession = parts[0]
+                    try:
+                        start = int(parts[7])
+                        end = int(parts[8])
+                        accession_zone_regions[accession].append((start, end))
+                    except ValueError:
+                        continue
 
         logger.info(f"Processing {len(accession_regions)} unique proteins...")
         
@@ -105,6 +117,7 @@ class BindingDataset(Dataset):
                     # continue
                 # Build Target Mask (0 = background, 1 = binding)
                 target_mask = torch.zeros((seq_len,), dtype=torch.float32)
+                zone_mask = torch.zeros((seq_len,), dtype=torch.float32)
                 
                 for start, end in regions:
                     # DisProt is 1-based inclusive. 
@@ -119,6 +132,14 @@ class BindingDataset(Dataset):
                         target_mask[s:e] = 1.0
                     else:
                         logger.error(f'For some magical reason the start position is overindexed at {accession} pos {s}')
+
+                for start, end in accession_zone_regions.get(accession, []):
+                    s = max(0, start - 1)
+                    e = min(seq_len, end)
+                    if s < seq_len:
+                        zone_mask[s:e] = 1.0
+                    else:
+                        logger.error(f'Zone label overindexed at {accession} pos {s}')
                 
                 # Load precomputed energy embedding (L, 32)
                 emb_path = self.energy_emb_dir / f"{accession}.npy"
@@ -133,7 +154,7 @@ class BindingDataset(Dataset):
                         f"Energy embedding length {energy_emb.shape[0]} != sequence length {seq_len} for {accession}"
                     )
 
-                self.data.append((encoded_seq, target_mask, accession, energy_emb))
+                self.data.append((encoded_seq, target_mask, zone_mask, accession, energy_emb))
                 
             except FileNotFoundError as e:
                 # print(f"Missing FASTA for {accession}")
@@ -160,25 +181,26 @@ def pad_collate(batch):
         accessions: tuple of accession IDs
         padded_energy_embs: (Batch, Max_Len, 32) - energy embeddings
     """
-    (seqs, targets, accessions, energy_embs) = zip(*batch)
+    (seqs, targets, zone_masks, accessions, energy_embs) = zip(*batch)
     
+
     # Calculate lengths (optional, but often useful for masking loss)
     lengths = torch.tensor([len(s) for s in seqs])
     
     # Pad sequences with zeros (seq_len, num_features) -> (batch, max_len, num_features)
-    padded_seqs = pad_sequence(seqs, batch_first=True, padding_value=0.0)
+    padded_seqs = pad_sequence(list(seqs), batch_first=True, padding_value=0.0)
     
     # Pad targets with 0 (background class) BE AWARE THIS MIGHT BE WRONG!
-    padded_targets = pad_sequence(targets, batch_first=True, padding_value=-1)
+    padded_targets = pad_sequence(list(targets), batch_first=True, padding_value=-1)
+    padded_zone_masks = pad_sequence(list(zone_masks), batch_first=True, padding_value=-1)
     
     # Pad energy embeddings with zeros (seq_len, 32) -> (batch, max_len, 32)
     padded_energy_embs = pad_sequence(energy_embs, batch_first=True, padding_value=0.0)
     
-    return padded_seqs, padded_targets, lengths, accessions, padded_energy_embs
+    return padded_seqs, padded_targets, padded_zone_masks, lengths, accessions, padded_energy_embs
 
-
-def get_binding_dataloader(tsv_file, seq_dir, energy_emb_dir='data/energy_embeddings', batch_size=32, shuffle=True):
-    dataset = BindingDataset(tsv_file, seq_dir, energy_emb_dir=energy_emb_dir)
+def get_binding_dataloader(tsv_file, seq_dir, batch_size=32, shuffle=True, zone_annotations=("disorder",), energy_emb_dir='data/energy_embeddings'):
+    dataset = BindingDataset(tsv_file, seq_dir, zone_annotations=zone_annotations, energy_emb_dir=energy_emb_dir)
     # logger.error(len(dataset))
     loader = DataLoader(
         dataset, 
@@ -198,9 +220,10 @@ if __name__ == "__main__":
     )
     
     # Iterate through one batch to verify
-    for seqs, targets, lengths in train_loader:
+    for seqs, targets, zone_masks, lengths, accessions in train_loader:
         print(f"Batch Shape Inputs: {seqs.shape}")   # [32, MAX_LEN, 20]
         print(f"Batch Shape Targets: {targets.shape}") # [32, MAX_LEN]
+        print(f"Batch Shape Zones: {zone_masks.shape}") # [32, MAX_LEN]
         print(f"First Sequence Length: {lengths[0]}")
         print(f"First position one-hot: {seqs[0, 0]}")  # Should be one-hot vector
         print(f"Len of first position one-hot: {len(seqs[0])}")
