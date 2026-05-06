@@ -10,7 +10,7 @@ import optuna
 
 from model import BindingPredictor
 from binding_dataset import BindingDataset, pad_collate
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -25,7 +25,7 @@ parser.add_argument("--zone_annotations", nargs="+", default=["disorder"],
 parser.add_argument("--max_epochs", default=350, type=int, help="Maximum number of training epochs.")
 parser.add_argument("--n_trials", default=50, type=int, help="Number of Optuna trials.")
 parser.add_argument("--out_path", default='results', type=str, help="Path to write results and logs.")
-
+batch_size=4
 args = parser.parse_args()
 
 # if torch.cuda.is_available():
@@ -65,6 +65,20 @@ val_dataset = BindingDataset(
     tsv_file='iupred2a/data/val.tsv',
     seq_dir='iupred2a/data/seq',
 )
+
+# Weighted sampler: draw sequences proportional to their binding residue density
+_sample_weights = torch.tensor(
+    [int((tm == 1).sum().item()) / tm.shape[0] for _, tm, *_ in train_dataset],
+    dtype=torch.float64,
+)
+train_sampler = WeightedRandomSampler(
+    weights=_sample_weights.tolist(),
+    num_samples=len(train_dataset),
+    replacement=True,
+)
+train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, collate_fn=pad_collate)
+val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=pad_collate)
+print(f"Sampler weights: min={_sample_weights.min():.4f} max={_sample_weights.max():.4f} mean={_sample_weights.mean():.4f}")
 
 embed_dim = 20  # one-hot encoded amino acids
 
