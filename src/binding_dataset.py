@@ -8,6 +8,8 @@ from tqdm import tqdm
 import numpy as np
 from helper_functions import read_fasta, setup_logger 
 
+ESM2_REPR_PATH = "data/esm2_representations.pt"
+
 # Amino Acid vocabulary for one-hot encoding
 AA_VOCAB = "ACDEFGHIKLMNPQRSTVWY"
 AA_TO_ID = {aa: i for i, aa in enumerate(AA_VOCAB)}
@@ -50,7 +52,11 @@ class BindingDataset(Dataset):
         self.aa_to_id = aa_to_id
         self.energy_emb_dir = Path(energy_emb_dir)
         self.zone_annotations = {label.strip().lower() for label in zone_annotations}
-        
+
+        # Load ESM2 representations once
+        logger.info("Loading ESM2 representations...")
+        self.esm2_reps = torch.load(ESM2_REPR_PATH, weights_only=True)
+
         # 1. Aggregate regions by Accession ID to handle multiple sites per protein
         # Mapping: accession -> list of (start, end) tuples
         accession_regions = defaultdict(list)
@@ -107,14 +113,14 @@ class BindingDataset(Dataset):
                     continue
                 seq_len = len(sequence_str)
                 
-                # One-hot encode sequence (seq_len, NUM_AMINO_ACIDS)
-                # try:
-                encoded_seq = one_hot_encode(sequence_str, self.aa_to_id)
-                # logger.info("lucsi")
-                # logger.info(encoded_seq.shape)
-                # except Exception as e:
-                #     logger.error(f"One-hot encoding failed for {accession}: {e}")
-                    # continue
+                # ESM2 representation (seq_len, 1280)
+                if accession not in self.esm2_reps:
+                    raise KeyError(f"Missing ESM2 representation for {accession}. Run generate_esm2_representations.py first.")
+                encoded_seq = self.esm2_reps[accession]
+                if encoded_seq.shape[0] != seq_len:
+                    raise ValueError(
+                        f"ESM2 representation length {encoded_seq.shape[0]} != sequence length {seq_len} for {accession}"
+                    )
                 # Build Target Mask (0 = background, 1 = binding)
                 target_mask = torch.zeros((seq_len,), dtype=torch.float32)
                 zone_mask = torch.zeros((seq_len,), dtype=torch.float32)

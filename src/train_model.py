@@ -89,7 +89,7 @@ train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sa
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=pad_collate)
 print(f"Sampler weights: min={_sample_weights.min():.4f} max={_sample_weights.max():.4f} mean={_sample_weights.mean():.4f}")
 
-embed_dim = 20  # one-hot encoded amino acids
+embed_dim = 1280  # ESM2 representations
 
 
 def objective(trial):
