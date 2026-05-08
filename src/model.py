@@ -86,13 +86,13 @@ class BindingPredictor(nn.Module):
         energy_matrix_path=DEFAULT_ENERGY_MATRIX_PATH,
     ):
         super().__init__()
-        conv_dim = linear_dim * 2  # outer_concat doubles the dim
+        # conv_dim = linear_dim * 2  # outer_concat doubles the dim
         self.reduce_op = reduce_op
         self.threshold = 0.1
         # self.linear_in = nn.Linear(embed_dim, (int) (conv_dim/2))
         # After concat with energy embedding: linear_out + energy_emb_dim per position
         # outer_concat doubles that: 2 * (conv_dim/2 + energy_emb_dim) channels
-        outer_dim = 2 * (int(conv_dim/2) + energy_emb_dim)
+        outer_dim = 2 * (linear_dim + energy_emb_dim)
         # self.conv_out = nn.Conv1d(outer_dim, 1, kernel_size=kernel_size, padding="same")
         # self.device = device
         # self.class_weight = torch.tensor([negative_weight, 1.0]).float().to(self.device)
@@ -102,8 +102,8 @@ class BindingPredictor(nn.Module):
         # energy_np = read_energy_matrix(energy_matrix_path)
         # self.register_buffer('energy_matrix', torch.tensor(energy_np))  # (20, 20) fixed
         # self.energy_weights = nn.Parameter(torch.ones(20, 20))          # (20, 20) learnable
-        self.energy_proj = nn.Conv2d(in_channels=1, out_channels=conv_dim, kernel_size=1, bias=False)
-        self.conv_out = nn.Conv1d(conv_dim, 1, kernel_size=kernel_size, padding="same")
+        # self.energy_proj = nn.Conv2d(in_channels=1, out_channels=conv_dim, kernel_size=1, bias=False)
+        self.conv_out = nn.Conv1d(outer_dim, 1, kernel_size=kernel_size, padding="same")
         self.device = device
         self.class_weight = torch.tensor([negative_weight, 1.0]).float().to(self.device)
 
