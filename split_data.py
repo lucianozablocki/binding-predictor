@@ -37,12 +37,15 @@ def split_data(input_file: str, output_dir: str, val_ratio: float = 0.2, seed: i
     header = lines[0]
     data_lines = lines[1:]
     
-    # Group lines by accession (first column)
+    # Group lines by accession (first column), keeping only protein binding rows
     accession_to_lines = {}
     for line in data_lines:
         if not line.strip():
             continue
-        accession = line.split('\t')[0]
+        cols = line.split('\t')
+        if cols[11] != 'protein binding':
+            continue
+        accession = cols[0]
         if accession not in accession_to_lines:
             accession_to_lines[accession] = []
         accession_to_lines[accession].append(line)
@@ -51,8 +54,8 @@ def split_data(input_file: str, output_dir: str, val_ratio: float = 0.2, seed: i
     accessions = list(accession_to_lines.keys())
     random.shuffle(accessions)
     
-    print(f"Found {len(accessions)} unique protein accessions")
-    print(f"Total rows: {len(data_lines)}")
+    print(f"Found {len(accessions)} unique protein accessions (protein binding only)")
+    print(f"Total rows: {sum(len(v) for v in accession_to_lines.values())}")
     
     # Calculate split
     val_size = int(len(accessions) * val_ratio)
@@ -95,13 +98,13 @@ def main():
     parser.add_argument(
         "--input", "-i",
         type=str,
-        default="iupred2a/data/disprot_v_25_06.tsv",
+        default="iupred2a/data/DisProt_2023_12_IDPO-GO.tsv",
         help="Input TSV file (default: iupred2a/data/disprot_v_25_06.tsv)"
     )
     parser.add_argument(
         "--output", "-o",
         type=str,
-        default="iupred2a/data",
+        default="iupred2a/data/2312_disprot",
         help="Output directory for train.tsv and val.tsv (default: iupred2a/data)"
     )
     parser.add_argument(
