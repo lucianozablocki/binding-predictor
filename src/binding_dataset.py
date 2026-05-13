@@ -226,7 +226,7 @@ if __name__ == "__main__":
     )
     
     # Iterate through one batch to verify
-    for seqs, targets, zone_masks, lengths, accessions in train_loader:
+    for seqs, targets, zone_masks, lengths, accessions, energy_embs in train_loader:
         print(f"Batch Shape Inputs: {seqs.shape}")   # [32, MAX_LEN, 20]
         print(f"Batch Shape Targets: {targets.shape}") # [32, MAX_LEN]
         print(f"Batch Shape Zones: {zone_masks.shape}") # [32, MAX_LEN]

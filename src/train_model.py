@@ -7,6 +7,7 @@ import os
 import csv
 import pandas as pd
 import optuna
+from sklearn.metrics import roc_curve, roc_auc_score, precision_recall_curve, average_precision_score
 
 from model import BindingPredictor
 from binding_dataset import BindingDataset, pad_collate
@@ -51,8 +52,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-logger.info("using lr: {}".format(args.lr))
 
 def handle_exception(exc_type, exc_value, exc_traceback):
     if issubclass(exc_type, KeyboardInterrupt):
@@ -177,6 +176,20 @@ def objective(trial):
         trial.report(val_metrics["f1"], epoch)
         if trial.should_prune():
             raise optuna.exceptions.TrialPruned()
+
+    y_true, y_prob = net.collect_scores(val_loader)
+
+    fpr, tpr, _ = roc_curve(y_true, y_prob)
+    auc = roc_auc_score(y_true, y_prob)
+    np.save(os.path.join(trial_dir, f"trial_{trial.number:03d}_roc_fpr.npy"), fpr)
+    np.save(os.path.join(trial_dir, f"trial_{trial.number:03d}_roc_tpr.npy"), tpr)
+    logger.info(f"  Trial {trial.number} ROC AUC: {auc:.4f}")
+
+    precision, recall, _ = precision_recall_curve(y_true, y_prob)
+    ap = average_precision_score(y_true, y_prob)
+    np.save(os.path.join(trial_dir, f"trial_{trial.number:03d}_pr_precision.npy"), precision)
+    np.save(os.path.join(trial_dir, f"trial_{trial.number:03d}_pr_recall.npy"), recall)
+    logger.info(f"  Trial {trial.number} Average Precision: {ap:.4f}")
 
     return best_val_f1
 

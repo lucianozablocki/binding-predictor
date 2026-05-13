@@ -286,6 +286,21 @@ class BindingPredictor(nn.Module):
             "non_zone_tp": non_zone_tp_acum,
         }
 
+    def collect_scores(self, loader):
+        """Returns (y_true, y_prob) flat numpy arrays (padding excluded) for ROC analysis."""
+        self.eval()
+        all_labels, all_probs = [], []
+        with torch.no_grad():
+            for batch in loader:
+                X = batch[0].to(self.device)
+                y = batch[1]
+                energy_embs = batch[5].to(self.device)
+                y_pred = self(X, energy_embs).cpu()
+                mask = y != -1
+                all_labels.append(y[mask].numpy())
+                all_probs.append(torch.sigmoid(y_pred[mask]).numpy())
+        return np.concatenate(all_labels), np.concatenate(all_probs)
+
     def pred(self, loader):
         self.eval()
 
