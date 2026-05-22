@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 from helper_functions import read_fasta, setup_logger 
 
-ESM2_REPR_PATH = "data/esm2_representations.pt"
+ESM2_REPR_PATH = "data/2312_disprot_esm2_representations.pt"
 
 # Amino Acid vocabulary for one-hot encoding
 AA_VOCAB = "ACDEFGHIKLMNPQRSTVWY"
@@ -109,7 +109,7 @@ class BindingDataset(Dataset):
                 
                 # Extract sequence (values) not header (keys)
                 sequence_str = list(fasta_dict.values())[0]
-                if len(sequence_str)>1000:
+                if len(sequence_str)>4000:
                     logger.info(f'Skipping {accession} due to length {len(sequence_str)}')
                     continue
                 seq_len = len(sequence_str)
@@ -254,9 +254,9 @@ class CSVBindingDataset(Dataset):
             target_str = str(row["target"])
             seq_len = len(sequence_str)
 
-            if seq_len > 1000:
-                logger.info(f"Skipping {accession} due to length {seq_len}")
-                continue
+            # if seq_len > 1000:
+            #     logger.info(f"Skipping {accession} due to length {seq_len}")
+            #     continue
 
             if len(target_str) != seq_len:
                 raise ValueError(
@@ -329,7 +329,8 @@ def get_csv_binding_dataloader(csv_file, esm2_repr_path=ESM2_REPR_PATH,
 if __name__ == "__main__":
     # Create the loader
     train_loader = get_binding_dataloader(
-        tsv_file='iupred2a/data/disprot_v_25_06.tsv',
+        # tsv_file='iupred2a/data/disprot_v_25_06.tsv',
+        tsv_file='iupred2a/data/DisProt_2023_12_IDPO-GO.tsv',
         seq_dir='iupred2a/data/seq'
     )
     
