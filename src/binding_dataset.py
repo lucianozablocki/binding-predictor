@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from tqdm import tqdm
 import numpy as np
+import pandas as pd
 from helper_functions import read_fasta, setup_logger 
 
 ESM2_REPR_PATH = "data/esm2_representations.pt"
@@ -216,6 +217,113 @@ def get_binding_dataloader(tsv_file, seq_dir, batch_size=32, shuffle=True, zone_
     )
     
     return loader
+
+
+class CSVBindingDataset(Dataset):
+    """Dataset that reads (sequence, target, accession) from a CSV file.
+
+    The CSV must have at least three columns:
+        - ``accession``: UniProt-style accession ID (used to look up embeddings)
+        - ``sequence``: Amino acid sequence string (standard 20 AAs)
+        - ``target``: Per-residue binary labels as a string of '0'/'1' characters
+                      with the same length as the sequence (e.g. "0010110")
+
+    ESM2 representations and energy embeddings are loaded exactly as in
+    :class:`BindingDataset`, so the same pre-computation steps are required.
+    Zone masks are set to zeros (no zone information available from CSV).
+    """
+
+    def __init__(self, csv_file, esm2_repr_path=ESM2_REPR_PATH,
+                 energy_emb_dir='data/energy_embeddings'):
+        self.data = []
+        self.energy_emb_dir = Path(energy_emb_dir)
+
+        logger.info("Loading ESM2 representations...")
+        esm2_reps = torch.load(esm2_repr_path, weights_only=True)
+
+        logger.info(f"Reading CSV: {csv_file}")
+        df = pd.read_csv(csv_file)
+        required_cols = {"accession", "sequence", "target"}
+        missing = required_cols - set(df.columns)
+        if missing:
+            raise ValueError(f"CSV is missing required columns: {missing}")
+
+        for _, row in tqdm(df.iterrows(), total=len(df)):
+            accession = str(row["accession"])
+            sequence_str = str(row["sequence"])
+            target_str = str(row["target"])
+            seq_len = len(sequence_str)
+
+            if seq_len > 1000:
+                logger.info(f"Skipping {accession} due to length {seq_len}")
+                continue
+
+            if len(target_str) != seq_len:
+                raise ValueError(
+                    f"{accession}: target length {len(target_str)} != "
+                    f"sequence length {seq_len}. Check the preprocessing step that "
+                    f"produced the target column."
+                )
+
+            # ESM2 representation
+            if accession not in esm2_reps:
+                raise KeyError(
+                    f"{accession}: missing ESM2 representation in {esm2_repr_path}. "
+                    f"Run generate_esm2_representations.py for this split first."
+                )
+            encoded_seq = esm2_reps[accession]
+            if encoded_seq.shape[0] != seq_len:
+                raise ValueError(
+                    f"{accession}: ESM2 representation length {encoded_seq.shape[0]} != "
+                    f"sequence length {seq_len}. The representation file may be stale."
+                )
+
+            # Target mask from CSV column
+            try:
+                target_mask = torch.tensor(
+                    [float(c) for c in target_str], dtype=torch.float32
+                )
+            except ValueError as e:
+                raise ValueError(
+                    f"{accession}: target column contains non-numeric characters "
+                    f"({e}). Expected a string of '0'/'1' chars."
+                ) from e
+
+            # Zone mask: zeros (no zone info in CSV)
+            zone_mask = torch.zeros(seq_len, dtype=torch.float32)
+
+            # Energy embedding
+            emb_path = self.energy_emb_dir / f"{accession}.npy"
+            if not emb_path.exists():
+                raise FileNotFoundError(
+                    f"{accession}: missing energy embedding at {emb_path}. "
+                    f"Run precompute_energy_embeddings.py for this split first."
+                )
+            energy_emb = torch.from_numpy(np.load(emb_path)).float()
+            if energy_emb.shape[0] != seq_len:
+                raise ValueError(
+                    f"{accession}: energy embedding length {energy_emb.shape[0]} != "
+                    f"sequence length {seq_len}. The embedding file may be stale."
+                )
+
+            self.data.append((encoded_seq, target_mask, zone_mask, accession, energy_emb))
+
+        logger.info(f"Loaded {len(self.data)} proteins from {csv_file}")
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+
+def get_csv_binding_dataloader(csv_file, esm2_repr_path=ESM2_REPR_PATH,
+                                batch_size=32, shuffle=False,
+                                energy_emb_dir='data/energy_embeddings'):
+    dataset = CSVBindingDataset(csv_file, esm2_repr_path=esm2_repr_path,
+                                energy_emb_dir=energy_emb_dir)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
+                      collate_fn=pad_collate)
 
 # --- Run ---
 if __name__ == "__main__":

@@ -170,7 +170,11 @@ def objective(trial):
                 val_metrics['non_zone_tn'], val_metrics['non_zone_fp'], val_metrics['non_zone_fn'], val_metrics['non_zone_tp'],
             ])
 
-        best_val_f1 = max(best_val_f1, val_metrics["f1"])
+        if val_metrics["f1"] > best_val_f1:
+            best_val_f1 = val_metrics["f1"]
+            weights_path = os.path.join(trial_dir, f"trial_{trial.number:03d}_best_weights.pmt")
+            torch.save(net.state_dict(), weights_path)
+            logger.info(f"  Saved best weights (val_f1={best_val_f1:.4f}) -> {weights_path}")
 
         # Report intermediate value for pruning
         trial.report(val_metrics["f1"], epoch)
