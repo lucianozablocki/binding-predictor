@@ -29,9 +29,10 @@ parser.add_argument("--out_path", default='results', type=str,
                     help="Directory to write metrics and predictions.")
 
 # Model architecture (must match saved weights)
-parser.add_argument("--linear_dim", default=64, type=int)
-parser.add_argument("--kernel_size", default=21, type=int)
-parser.add_argument("--reduce_op", default="max", type=str)
+parser.add_argument("--linear_dim", default=32, type=int)
+parser.add_argument("--num_blocks", default=2, type=int)
+parser.add_argument("--kernel_size", default=9, type=int)
+parser.add_argument("--dropout", default=0.2, type=float)
 
 args = parser.parse_args()
 
@@ -42,7 +43,7 @@ else:
 
 os.makedirs(args.out_path, exist_ok=True)
 
-out_name = os.path.splitext(os.path.basename(args.test_csv))[0]
+out_name = os.path.splitext(os.path.basename(args.out_path))[0]
 
 logging.basicConfig(
     level=logging.DEBUG,  # Set the minimum log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
@@ -66,12 +67,19 @@ test_loader = DataLoader(test_dataset, batch_size=args.batch_size,
                          shuffle=False, collate_fn=pad_collate)
 
 embed_dim = 1280  # ESM2
+pos_weight = 3.54
+linear_dim = args.linear_dim
+num_blocks = args.num_blocks
+kernel_size = args.kernel_size
+dropout = args.dropout
 
 net = BindingPredictor(
     embed_dim=embed_dim,
-    linear_dim=args.linear_dim,
-    kernel_size=args.kernel_size,
-    reduce_op=args.reduce_op,
+    linear_dim=linear_dim,
+    num_blocks=num_blocks,
+    kernel_size=kernel_size,
+    dropout=dropout,
+    pos_weight=pos_weight,
     device=device,
 )
 net.load_state_dict(torch.load(args.weights_path, map_location=device))
@@ -88,16 +96,16 @@ metrics["test_avg_precision"] = average_precision_score(y_true, y_prob)
 logger.info(f"ROC AUC: {metrics['test_roc_auc']:.4f}  Avg Precision: {metrics['test_avg_precision']:.4f}")
 
 fpr, tpr, _ = roc_curve(y_true, y_prob)
-np.save(os.path.join(args.out_path, f"roc_fpr_{out_name}.npy"), fpr)
-np.save(os.path.join(args.out_path, f"roc_tpr_{out_name}.npy"), tpr)
-logger.info(f"ROC curve saved to {args.out_path}/roc_{{fpr,tpr}}_{out_name}.npy")
+np.save(os.path.join(args.out_path, f"{out_name}_roc_fpr.npy"), fpr)
+np.save(os.path.join(args.out_path, f"{out_name}_roc_tpr.npy"), tpr)
+logger.info(f"ROC curve saved to {args.out_path}/{out_name}_roc_{{fpr,tpr}}.npy")
 
 precision, recall, _ = precision_recall_curve(y_true, y_prob)
-np.save(os.path.join(args.out_path, f"pr_precision_{out_name}.npy"), precision)
-np.save(os.path.join(args.out_path, f"pr_recall_{out_name}.npy"), recall)
-logger.info(f"PR curve saved to {args.out_path}/pr_{{precision,recall}}_{out_name}.npy")
+np.save(os.path.join(args.out_path, f"{out_name}_pr_precision.npy"), precision)
+np.save(os.path.join(args.out_path, f"{out_name}_pr_recall.npy"), recall)
+logger.info(f"PR curve saved to {args.out_path}/{out_name}_pr_{{precision,recall}}.npy")
 
-metrics_path = os.path.join(args.out_path, f"metrics_{out_name}.csv")
+metrics_path = os.path.join(args.out_path, f"{out_name}.csv")
 pd.DataFrame([metrics]).to_csv(metrics_path, index=False)
 logger.info(f"Metrics saved to {metrics_path}")
 
@@ -122,6 +130,6 @@ with torch.no_grad():
                     "score": float(y_pred[i, pos].item()),
                 })
 
-preds_path = os.path.join(args.out_path, f"preds_{out_name}.csv")
+preds_path = os.path.join(args.out_path, f"{out_name}_preds.csv")
 pd.DataFrame(rows).to_csv(preds_path, index=False)
 logger.info(f"Predictions saved to {preds_path}")

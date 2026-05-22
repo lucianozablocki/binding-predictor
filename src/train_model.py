@@ -11,7 +11,7 @@ from sklearn.metrics import roc_curve, roc_auc_score, precision_recall_curve, av
 
 from model import BindingPredictor
 from binding_dataset import BindingDataset, pad_collate
-from torch.utils.data import DataLoader, WeightedRandomSampler
+from torch.utils.data import DataLoader
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -63,44 +63,32 @@ sys.excepthook = handle_exception
 
 # Load datasets once, create loaders per trial (batch_size may vary)
 train_dataset = BindingDataset(
-    tsv_file='iupred2a/data/train.tsv',
+    tsv_file='iupred2a/data/2312_disprot/train.tsv',
     seq_dir='iupred2a/data/seq',
     energy_emb_dir=args.energy_emb_dir,
 )
 
 val_dataset = BindingDataset(
-    tsv_file='iupred2a/data/val.tsv',
+    tsv_file='iupred2a/data/2312_disprot/val.tsv',
     seq_dir='iupred2a/data/seq',
     energy_emb_dir=args.energy_emb_dir,
 )
 
-# Weighted sampler: draw sequences proportional to their binding residue density
-_sample_weights = torch.tensor(
-    [int((tm == 1).sum().item()) / tm.shape[0] for _, tm, *_ in train_dataset],
-    dtype=torch.float64,
-)
-train_sampler = WeightedRandomSampler(
-    weights=_sample_weights.tolist(),
-    num_samples=len(train_dataset),
-    replacement=True,
-)
-train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, collate_fn=pad_collate)
-val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=pad_collate)
-print(f"Sampler weights: min={_sample_weights.min():.4f} max={_sample_weights.max():.4f} mean={_sample_weights.mean():.4f}")
-
 embed_dim = 1280  # ESM2 representations
-
+pos_weight = 3.54
 
 def objective(trial):
     # Model hyperparameters
-    linear_dim = trial.suggest_categorical("linear_dim", [8, 16, 32, 64])
-    kernel_size = trial.suggest_categorical("kernel_size", [3, 5, 9, 16, 21])
-    reduce_op = trial.suggest_categorical("reduce_op", ["mean", "max", "std"])
+    linear_dim = trial.suggest_categorical("linear_dim", [32])
+    num_blocks = trial.suggest_categorical("num_blocks", [2])
+    kernel_size = trial.suggest_categorical("kernel_size", [9])
+    dropout = trial.suggest_categorical("dropout", [0.3])
 
     # Training hyperparameters
-    lr = trial.suggest_float("lr", 1e-5, 1e-2, log=True)
-    optimizer_name = trial.suggest_categorical("optimizer", ["Adam", "SGD", "AdamW"])
-    batch_size = trial.suggest_categorical("batch_size", [4])
+    lr = trial.suggest_float("lr", 6.61e-04, 6.61e-04, log=True)
+    optimizer_name = trial.suggest_categorical("optimizer", ["AdamW"])
+    weight_decay = trial.suggest_categorical("weight_decay", [0.1])
+    # batch_size = trial.suggest_categorical("batch_size", [4])
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=pad_collate)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, collate_fn=pad_collate)
@@ -108,23 +96,29 @@ def objective(trial):
     net = BindingPredictor(
         embed_dim=embed_dim,
         linear_dim=linear_dim,
+        num_blocks=num_blocks,
         kernel_size=kernel_size,
-        reduce_op=reduce_op,
+        dropout=dropout,
+        pos_weight=pos_weight,
         device=device,
     )
 
     num_params = sum(p.numel() for p in net.parameters())
-    logger.info(f"Trial {trial.number}: linear_dim={linear_dim}, kernel_size={kernel_size}, "
-                f"reduce_op={reduce_op}, lr={lr:.2e}, optimizer={optimizer_name}, params={num_params}, batch_size={batch_size}")
+    logger.info(f"Trial {trial.number}: linear_dim={linear_dim}, num_blocks={num_blocks}, "
+                f"kernel_size={kernel_size}, dropout={dropout}, lr={lr:.2e}, "
+                f"optimizer={optimizer_name}, weight_decay={weight_decay}, "
+                f"pos_weight={pos_weight:.4f}, params={num_params}, batch_size={batch_size}")
 
     # Per-trial metrics CSV with parameters as header comments
     trial_dir = os.path.join(args.out_path, "trials")
     os.makedirs(trial_dir, exist_ok=True)
     metrics_path = os.path.join(trial_dir, f"trial_{trial.number:03d}.csv")
     with open(metrics_path, 'w', newline='') as f:
-        f.write(f"# trial={trial.number} linear_dim={linear_dim} kernel_size={kernel_size} "
-                f"reduce_op={reduce_op} lr={lr:.2e} optimizer={optimizer_name} "
-            f"params={num_params} batch_size={batch_size} zone_annotations={args.zone_annotations}\n")
+        f.write(f"# trial={trial.number} linear_dim={linear_dim} num_blocks={num_blocks} "
+                f"kernel_size={kernel_size} dropout={dropout} lr={lr:.2e} "
+                f"optimizer={optimizer_name} weight_decay={weight_decay} "
+                f"pos_weight={pos_weight:.4f} params={num_params} batch_size={batch_size} "
+                f"zone_annotations={args.zone_annotations}\n")
         writer = csv.writer(f)
         writer.writerow([
             "epoch",
@@ -137,11 +131,11 @@ def objective(trial):
         ])
 
     if optimizer_name == "Adam":
-        optimizer = torch.optim.Adam(net.parameters(), lr=lr)
+        optimizer = torch.optim.Adam(net.parameters(), lr=lr, weight_decay=weight_decay)
     elif optimizer_name == "SGD":
-        optimizer = torch.optim.SGD(net.parameters(), lr=lr)
+        optimizer = torch.optim.SGD(net.parameters(), lr=lr, weight_decay=weight_decay)
     elif optimizer_name == "AdamW":
-        optimizer = torch.optim.AdamW(net.parameters(), lr=lr)
+        optimizer = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=weight_decay)
 
     best_val_f1 = 0.0
     for epoch in range(args.max_epochs):
